@@ -1,363 +1,144 @@
-import "reflect-metadata";
-import chai, { expect } from "chai";
-import sinon from "sinon";
-import sinonChai from "sinon-chai";
-import jwt from "jsonwebtoken";
-import { JwtService } from "../../../src/services/JwtService";
-import RedisHandler from "../../../src/primingApi/RedisHandler";
-import { IApplicationConfig } from "../../../src/types/IConfigurationTypes";
-import { TestConfig } from "../utils/testConfig";
-import { TestLogger } from "../utils/testLogger";
-import BaseRestError from "../../../src/errors/BaseRestError";
-import KeyPemFiles from "../../../src/enums/KeyPemFiles";
+const chai = require('chai');
+const sinon = require('sinon');
+const expect = chai.expect;
 
-chai.use(sinonChai);
+// Mock dependencies
+const ServiceStack = require('../services/ServiceStack'); // Path to your ServiceStack
+const Logger = require('@dwp/node-logger'); // Path to your Logger
+const verifyTokenMiddleware = require('../middleware/verifyTokenMiddleware'); // Path to your middleware
+const { Request, Response } = require('express');
 
-const createConfig = ({ iss, aud }: { iss?: string; aud?: string } = {}) => ({
-  ...TestConfig,
-  IdP: {
-    CUSTOMER: {
-      ISS: iss || "http://localhost:8080/realms/customer",
-      JWKS_URI: "customer_uri",
-      AUD: aud || "customer_audience",
-    },
-    AGENT: {
-      ISS: iss || "http://localhost:8080/realms/agent",
-      JWKS_URI: "agent_uri",
-      AUD: aud || "agent_audience",
-      GROUPS: ["admin", "support"],
-    },
-  },
-}) as IApplicationConfig;
+// Mock services
+let serviceStackMock, loggerMock, req, res, next;
 
-describe("JwtService Tests", () => {
-  let jwtService: JwtService;
-  let redisHandlerMock: sinon.SinonStubbedInstance<RedisHandler>;
-  let jwtStub: sinon.SinonStub;
-
-  beforeEach(() => {
-    redisHandlerMock = sinon.createStubInstance(RedisHandler);
-    jwtService = new JwtService(redisHandlerMock, createConfig(), TestLogger);
-  });
-
-  afterEach(() => {
-    sinon.restore();
-  });
-
-  it("should verify a valid token successfully", async () => {
-    const decodedPayload = {
-      iss: "http://localhost:8080/realms/customer",
-      aud: "customer_audience",
-    };
-    const pemFile = "mockPemFile";
-
-    sinon.stub(jwt, "decode").returns({ payload: decodedPayload, header: { kid: "key-id" } });
-    redisHandlerMock.getData.resolves(JSON.stringify({ "key-id": pemFile }));
-    jwtStub = sinon.stub(jwt, "verify").callsFake(() => decodedPayload);
-
-    const result = await jwtService.verifyToken("validToken");
-    expect(result).to.have.property("jwtPayload");
-    expect(result).to.have.property("isAgent", false);
-  });
-
-  it("should throw an error for a malformed token", async () => {
-    sinon.stub(jwt, "decode").returns(null);
-
-    try {
-      await jwtService.verifyToken("invalidToken");
-    } catch (e: any) {
-      expect(e).to.be.instanceOf(BaseRestError);
-      expect(e.message).to.equal("PAYMENT-UI: Invalid or malformed token: invalidToken");
-      expect(e.status).to.equal(401);
-    }
-  });
-
-  it("should throw an error when AUD is missing in token payload", async () => {
-    const decodedPayload = {
-      iss: "http://localhost:8080/realms/customer",
-    };
-
-    sinon.stub(jwt, "decode").returns({ payload: decodedPayload, header: { kid: "key-id" } });
-
-    try {
-      await jwtService.verifyToken("missingAudToken");
-    } catch (e: any) {
-      expect(e).to.be.instanceOf(BaseRestError);
-      expect(e.message).to.equal("PAYMENT-UI:: Missing AUD field: missingAudToken");
-      expect(e.status).to.equal(403);
-    }
-  });
-
-  it("should throw an error for an invalid issuer", async () => {
-    const decodedPayload = {
-      iss: "http://invalid-issuer",
-      aud: "customer_audience",
-    };
-
-    sinon.stub(jwt, "decode").returns({ payload: decodedPayload, header: { kid: "key-id" } });
-
-    try {
-      await jwtService.verifyToken("invalidIssuerToken");
-    } catch (e: any) {
-      expect(e).to.be.instanceOf(BaseRestError);
-      expect(e.message).to.equal("PAYMENT-UI :: iss field http://invalid-issuer is not valid");
-      expect(e.status).to.equal(401);
-    }
-  });
-
-  it("should throw an error when no matching key ID is found in Redis", async () => {
-    const decodedPayload = {
-      iss: "http://localhost:8080/realms/customer",
-      aud: "customer_audience",
-    };
-
-    sinon.stub(jwt, "decode").returns({ payload: decodedPayload, header: { kid: "invalid-key-id" } });
-    redisHandlerMock.getData.resolves(JSON.stringify({}));
-
-    try {
-      await jwtService.verifyToken("noKeyIdToken");
-    } catch (e: any) {
-      expect(e).to.be.instanceOf(BaseRestError);
-      expect(e.message).to.equal("PAYMENT-UI :: JWT error: secret or public key must be provided");
-      expect(e.status).to.equal(403);
-    }
-  });
-
-  it("should throw an error when agent groups do not match", async () => {
-    const decodedPayload = {
-      iss: "http://localhost:8080/realms/agent",
-      aud: "agent_audience",
-      groups: ["user"],
-    };
-
-    sinon.stub(jwt, "decode").returns({ payload: decodedPayload, header: { kid: "key-id" } });
-    redisHandlerMock.getData.resolves(JSON.stringify({ "key-id": "mockPemFile" }));
-    jwtStub = sinon.stub(jwt, "verify").callsFake(() => decodedPayload);
-
-    try {
-      await jwtService.verifyToken("invalidGroupToken");
-    } catch (e: any) {
-      expect(e).to.be.instanceOf(BaseRestError);
-      expect(e.message).to.equal("PAYMENT-UI :: iss field http://localhost:8080/realms/agent is not valid");
-      expect(e.status).to.equal(403);
-    }
-  });
-
-  it("should throw TokenExpiredError when the token is expired", async () => {
-    const decodedPayload = {
-      iss: "http://localhost:8080/realms/customer",
-      aud: "customer_audience",
-    };
-    const pemFile = "mockPemFile";
-
-    sinon.stub(jwt, "decode").returns({ payload: decodedPayload, header: { kid: "key-id" } });
-    redisHandlerMock.getData.resolves(JSON.stringify({ "key-id": pemFile }));
-    jwtStub = sinon.stub(jwt, "verify").throws(new jwt.TokenExpiredError("Token expired", new Date()));
-
-    try {
-      await jwtService.verifyToken("expiredToken");
-    } catch (e: any) {
-      expect(e).to.be.instanceOf(BaseRestError);
-      expect(e.message).to.contain("Token expired at");
-      expect(e.status).to.equal(401);
-    }
-  });
-
-  it("should throw NotBeforeError when the token's nbf claim is in the future", async () => {
-    const decodedPayload = {
-      iss: "http://localhost:8080/realms/customer",
-      aud: "customer_audience",
-    };
-    const pemFile = "mockPemFile";
-
-    sinon.stub(jwt, "decode").returns({ payload: decodedPayload, header: { kid: "key-id" } });
-    redisHandlerMock.getData.resolves(JSON.stringify({ "key-id": pemFile }));
-    jwtStub = sinon.stub(jwt, "verify").throws(new jwt.NotBeforeError("Token not active", new Date()));
-
-    try {
-      await jwtService.verifyToken("notBeforeToken");
-    } catch (e: any) {
-      expect(e).to.be.instanceOf(BaseRestError);
-      expect(e.message).to.equal("PAYMENT-UI :: Token not active: Token not active");
-      expect(e.status).to.equal(401);
-    }
-  });
-
-  it("should throw JWT error for generic JsonWebTokenError", async () => {
-    const decodedPayload = {
-      iss: "http://localhost:8080/realms/customer",
-      aud: "customer_audience",
-    };
-    const pemFile = "mockPemFile";
-
-    sinon.stub(jwt, "decode").returns({ payload: decodedPayload, header: { kid: "key-id" } });
-    redisHandlerMock.getData.resolves(JSON.stringify({ "key-id": pemFile }));
-    jwtStub = sinon.stub(jwt, "verify").throws(new jwt.JsonWebTokenError("JWT malformed"));
-
-    try {
-      await jwtService.verifyToken("jwtErrorToken");
-    } catch (e: any) {
-      expect(e).to.be.instanceOf(BaseRestError);
-      expect(e.message).to.equal("PAYMENT-UI :: JWT error: JWT malformed");
-      expect(e.status).to.equal(403);
-    }
-  });
-});
-
-
-
-
-
-
-
-
-import { expect } from "chai";
-import sinon from "sinon";
-import getBenefitDetails from "../path/to/getBenefitDetails";
-import ServiceStack from "../path/to/services/ServiceStack";
-
-describe("getBenefitDetails", () => {
-  let req: any;
-  let res: any;
-  let next: sinon.SinonStub;
-  let loggerMock: any;
-  let serviceStackMock: any;
-
-  beforeEach(() => {
-    // Mock request object
-    req = {
-      query: {},
-    };
-
-    // Mock response object
-    res = {
-      status: sinon.stub().returnsThis(),
-      json: sinon.stub().returnsThis(),
-      render: sinon.stub(),
-    };
-
-    // Mock next function
-    next = sinon.stub();
-
-    // Mock logger
-    loggerMock = {
-      info: sinon.spy(),
-      error: sinon.spy(),
-    };
-
-    // Mock ServiceStack
-    serviceStackMock = {
-      paymentDetailsClientService: {
-        getAwardDetails: sinon.stub(),
-      },
-    };
-  });
-
-  afterEach(() => {
-    sinon.restore();
-  });
-
-  it("should handle successful response from ServiceStack", async () => {
-    const mockSasResponse = {
-      statusCode: "200",
-      data: {
-        sas_award_details: [
-          {
-            statusCode: 200,
-            data: {
-              award_start_date: "2023-01-01",
-              award_end_date: "2023-12-31",
-              estimated_next_payment: 1000,
+describe('verifyTokenMiddleware', () => {
+    beforeEach(() => {
+        // Create mocks and stubs
+        serviceStackMock = {
+            redisCacheService: {
+                getPayload: sinon.stub(),
             },
-          },
-        ],
-      },
-    };
-
-    serviceStackMock.paymentDetailsClientService.getAwardDetails.resolves(mockSasResponse);
-
-    const mockReq = {
-      query: {
-        guid: "test-guid",
-      },
-    };
-
-    await getBenefitDetails(serviceStackMock, loggerMock)(mockReq, res, next);
-
-    expect(res.render.calledOnce).to.be.true;
-    expect(res.render.firstCall.args[0]).to.equal("pages/benefit-details.njk");
-    expect(res.render.firstCall.args[1]).to.include.keys("sasAward");
-    expect(res.status.called).to.be.false; // No error status
-    expect(next.called).to.be.false;
-  });
-
-  it("should handle an error response from ServiceStack", async () => {
-    const mockError = new Error("Service error");
-    serviceStackMock.paymentDetailsClientService.getAwardDetails.rejects(mockError);
-
-    await getBenefitDetails(serviceStackMock, loggerMock)(req, res, next);
-
-    expect(loggerMock.error.calledOnce).to.be.true;
-    expect(loggerMock.error.firstCall.args[0]).to.contain("benefitDetails");
-    expect(res.render.calledOnce).to.be.true;
-    expect(res.render.firstCall.args[0]).to.equal("pages/benefit-details.njk");
-    expect(res.render.firstCall.args[1]).to.deep.equal({});
-    expect(next.called).to.be.false;
-  });
-
-  it("should handle a non-200 status code response from ServiceStack", async () => {
-    const mockSasResponse = {
-      statusCode: "404",
-    };
-
-    serviceStackMock.paymentDetailsClientService.getAwardDetails.resolves(mockSasResponse);
-
-    await getBenefitDetails(serviceStackMock, loggerMock)(req, res, next);
-
-    expect(res.status.calledOnceWith(200)).to.be.true;
-    expect(res.json.calledOnceWith("Error")).to.be.true;
-    expect(res.render.called).to.be.false;
-    expect(next.called).to.be.false;
-  });
-
-  it("should handle missing query parameter", async () => {
-    req.query = {}; // No 'guid'
-
-    await getBenefitDetails(serviceStackMock, loggerMock)(req, res, next);
-
-    expect(res.status.calledOnceWith(200)).to.be.true;
-    expect(res.json.calledOnceWith("Error")).to.be.true;
-    expect(res.render.called).to.be.false;
-    expect(next.called).to.be.false;
-  });
-
-  it("should handle valid benefit parameter in the query", async () => {
-    req.query.benefit = "esa";
-
-    const mockSasResponse = {
-      statusCode: "200",
-      data: {
-        sas_award_details: [
-          {
-            statusCode: 200,
-            data: {
-              award_start_date: "2023-01-01",
-              award_end_date: "2023-12-31",
-              estimated_next_payment: 1000,
+            jwtService: {
+                verifyToken: sinon.stub(),
             },
-          },
-        ],
-      },
-    };
+        };
 
-    serviceStackMock.paymentDetailsClientService.getAwardDetails.resolves(mockSasResponse);
+        loggerMock = {
+            error: sinon.stub(),
+            info: sinon.stub(),
+        };
 
-    await getBenefitDetails(serviceStackMock, loggerMock)(req, res, next);
+        req = {
+            headers: {},
+            query: {},
+            session: {},
+        };
 
-    expect(res.render.calledOnce).to.be.true;
-    expect(res.render.firstCall.args[0]).to.equal("pages/benefit-details.njk");
-    expect(res.render.firstCall.args[1]).to.include.keys("sasAward");
-    expect(next.called).to.be.false;
-  });
+        res = {
+            locals: {},
+            status: sinon.stub().returnsThis(),
+            json: sinon.stub(),
+        };
+
+        next = sinon.stub();
+    });
+
+    afterEach(() => {
+        sinon.restore();
+    });
+
+    it('should process a valid token and primed payload', async () => {
+        req.headers['x-access-token'] = 'valid-token';
+        req.query.sessionId = 'valid-session';
+        req.session.cacheId = 'valid-cache';
+
+        serviceStackMock.jwtService.verifyToken.resolves({
+            isAgent: true,
+            jwtPayload: { guid: '12345' },
+        });
+
+        serviceStackMock.redisCacheService.getPayload.resolves(
+            JSON.stringify({
+                renderAsFragment: true,
+                callbacks: { consumerCallbackComplete: 'callbackUrl' },
+                context: { dwpGUID: 'testGUID' },
+            })
+        );
+
+        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+
+        expect(serviceStackMock.jwtService.verifyToken.calledOnce).to.be.true;
+        expect(res.locals.isAgent).to.be.true;
+        expect(res.locals.renderAsFragment).to.be.true;
+        expect(next.calledOnce).to.be.true;
+    });
+
+    it('should throw error when x-access-token header is missing', async () => {
+        req.headers = {}; // Missing x-access-token
+
+        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+
+        expect(loggerMock.error.calledOnce).to.be.true;
+        expect(loggerMock.error.args[0][0]).to.include('Missing header key: x-access-token');
+        expect(res.status.calledWith(401)).to.be.true;
+        expect(next.called).to.be.false;
+    });
+
+    it('should throw error when x-access-token header is empty', async () => {
+        req.headers['x-access-token'] = ''; // Empty x-access-token
+
+        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+
+        expect(loggerMock.error.calledOnce).to.be.true;
+        expect(loggerMock.error.args[0][0]).to.include('Empty value for key: x-access-token');
+        expect(res.status.calledWith(401)).to.be.true;
+        expect(next.called).to.be.false;
+    });
+
+    it('should handle invalid Redis cache ID', async () => {
+        req.headers['x-access-token'] = 'valid-token';
+        req.query.sessionId = 'invalid-session';
+
+        serviceStackMock.jwtService.verifyToken.resolves({
+            isAgent: false,
+        });
+
+        req.session.cacheId = undefined; // Simulating invalid cache
+
+        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+
+        expect(loggerMock.error.calledOnce).to.be.true;
+        expect(loggerMock.error.args[0][0]).to.include('Error extracting payload from cache');
+        expect(next.calledOnce).to.be.true; // Allow middleware to proceed
+    });
+
+    it('should log error and return 500 for unexpected errors', async () => {
+        req.headers['x-access-token'] = 'valid-token';
+
+        serviceStackMock.jwtService.verifyToken.throws(new Error('Unexpected error'));
+
+        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+
+        expect(loggerMock.error.calledOnce).to.be.true;
+        expect(loggerMock.error.args[0][0]).to.include('Unexpected error');
+        expect(res.status.calledWith(500)).to.be.true;
+        expect(next.called).to.be.false;
+    });
+
+    it('should identify request as primed and valid', async () => {
+        req.headers['x-access-token'] = 'valid-token';
+        req.query.sessionId = 'valid-session';
+        req.session.cacheId = 'valid-cache';
+
+        serviceStackMock.jwtService.verifyToken.resolves({
+            isAgent: false,
+            jwtPayload: { guid: '12345' },
+        });
+
+        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+
+        expect(res.locals.isAgent).to.be.false;
+        expect(loggerMock.info.calledWithMatch(/primed and valid/)).to.be.true;
+        expect(next.calledOnce).to.be.true;
+    });
 });
-
