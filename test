@@ -1,195 +1,124 @@
-import { getPaymentHistory, postFilterPaymentHistory } from '../path/to/module';
-import sinon from 'sinon';
-import { expect } from 'chai';
 
-// Mock dependencies
-const ServiceStackMock = {
-  redisCacheService: {
-    getPayload: sinon.stub(),
-    setData: sinon.stub(),
-  },
-  paymentDetailsClientService: {
-    getPaymentHistory: sinon.stub(),
-  },
-};
 
-const JourneyContext = {
-  putContext: sinon.stub(),
-};
-
-const loggerMock = {
-  info: sinon.stub(),
-  error: sinon.stub(),
-};
-
-const showFilterData = sinon.stub();
-const filterUCBenefit = sinon.stub();
-const transformMoneyValue = sinon.stub();
-const totalDataValue = sinon.stub();
-const totalCountValue = sinon.stub();
-const totalPagesValue = sinon.stub();
-const fromPageNumber = sinon.stub();
-const toPageNumber = sinon.stub();
-
-describe('Payment History Functions - 100% Coverage', () => {
-  let req, res, next;
-
-  beforeEach(() => {
-    req = {
-      query: { requestid: '123', guid: 'guid-123' },
-      params: { id: '1' },
-      body: { benefit: ['Jobseekers Allowance'] },
-      session: {
-        id: 'session123',
-        save: sinon.stub(),
-        context: {},
-      },
-      casa: {
-        journeyContext: {
-          setDataForPage: sinon.stub(),
-          data: { 'payment-history': {} },
-        },
-      },
-    };
-
-    res = {
-      render: sinon.stub(),
-      redirect: sinon.stub(),
-    };
-
-    next = sinon.stub();
-  });
-
-  describe('getPaymentHistory', () => {
-    it('should render the payment-history page with valid data', async () => {
-      const payload = {
+  it('should handle paymentFilterValue as a single string', async () => {
+    const payload = {
+      paymentHistoryQueryResponse: {
+        statusCode: 200,
         data: [
           { benefitName: 'Jobseekers Allowance', amount: 100 },
           { benefitName: 'ESA', amount: 200 },
         ],
+      },
+    };
+
+    req.body.benefit = 'Jobseekers Allowance';
+
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
+    showFilterData.returns([
+      { value: 'Jobseekers Allowance', checked: false },
+      { value: 'ESA', checked: false },
+    ]);
+
+    const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
+
+    expect(result).to.be.undefined;
+    expect(res.render).to.have.been.called;
+  });
+
+  it('should handle paymentFilterValue as an array', async () => {
+    const payload = {
+      paymentHistoryQueryResponse: {
         statusCode: 200,
-      };
+        data: [
+          { benefitName: 'Jobseekers Allowance', amount: 100 },
+          { benefitName: 'ESA', amount: 200 },
+        ],
+      },
+    };
 
-      ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
-      transformMoneyValue.returns(payload.data);
+    req.body.benefit = ['Jobseekers Allowance'];
 
-      const result = await getPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
+    showFilterData.returns([
+      { value: 'Jobseekers Allowance', checked: false },
+      { value: 'ESA', checked: false },
+    ]);
 
-      expect(result).to.be.undefined;
-      expect(res.render).to.have.been.called;
-    });
+    const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
 
-    it('should handle missing payment data and render an empty page', async () => {
-      const payload = { data: [], statusCode: 200 };
-
-      ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
-
-      const result = await getPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
-
-      expect(result).to.be.undefined;
-      expect(res.render).to.have.been.called;
-    });
-
-    it('should redirect to /payment-ui/ if payload is null or invalid', async () => {
-      ServiceStackMock.redisCacheService.getPayload.resolves(null);
-
-      const result = await getPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
-
-      expect(result).to.be.undefined;
-      expect(res.redirect).to.have.been.calledWith('/payment-ui/');
-    });
-
-    it('should handle an empty response from the paymentDetailsClientService', async () => {
-      const payload = { data: [], statusCode: 200 };
-
-      ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
-      ServiceStackMock.paymentDetailsClientService.getPaymentHistory.resolves(null);
-
-      const result = await getPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
-
-      expect(result).to.be.undefined;
-      expect(res.render).to.have.been.called;
-    });
-
-    it('should handle errors by calling next', async () => {
-      const error = new Error('Test Error');
-      ServiceStackMock.redisCacheService.getPayload.rejects(error);
-
-      const result = await getPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
-
-      expect(result).to.be.undefined;
-      expect(next).to.have.been.calledWith(error);
-    });
+    expect(result).to.be.undefined;
+    expect(res.render).to.have.been.called;
   });
 
-  describe('postFilterPaymentHistory', () => {
-    it('should filter and render payment-history page with benefits', async () => {
-      const payload = {
-        paymentHistoryQueryResponse: {
-          statusCode: 200,
-          data: [
-            { benefitName: 'Jobseekers Allowance', amount: 100 },
-            { benefitName: 'ESA', amount: 200 },
-          ],
-        },
-      };
+  it('should handle pagination logic with data length exceeding page limit', async () => {
+    const payload = {
+      paymentHistoryQueryResponse: {
+        statusCode: 200,
+        data: Array.from({ length: 25 }, (_, i) => ({
+          benefitName: `Benefit ${i + 1}`,
+          amount: 100 + i,
+        })),
+      },
+    };
 
-      ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
-      showFilterData.returns([
-        { value: 'Jobseekers Allowance', checked: false },
-        { value: 'ESA', checked: false },
-      ]);
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
+    totalDataValue.returns(payload.paymentHistoryQueryResponse.data.slice(0, 10));
+    totalCountValue.returns(25);
+    totalPagesValue.returns(3);
 
-      const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
+    const result = await getPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
 
-      expect(result).to.be.undefined;
-      expect(res.render).to.have.been.called;
-    });
-
-    it('should handle no filter applied and render full data', async () => {
-      req.body.benefit = null;
-
-      const payload = {
-        paymentHistoryQueryResponse: {
-          statusCode: 200,
-          data: [
-            { benefitName: 'Jobseekers Allowance', amount: 100 },
-            { benefitName: 'ESA', amount: 200 },
-          ],
-        },
-      };
-
-      ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
-      showFilterData.returns([
-        { value: 'Jobseekers Allowance', checked: false },
-        { value: 'ESA', checked: false },
-      ]);
-
-      const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
-
-      expect(result).to.be.undefined;
-      expect(res.render).to.have.been.called;
-    });
-
-    it('should handle errors by calling next', async () => {
-      const error = new Error('Test Error');
-      ServiceStackMock.redisCacheService.getPayload.rejects(error);
-
-      const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
-
-      expect(result).to.be.undefined;
-      expect(next).to.have.been.calledWith(error);
-    });
-
-    it('should redirect to /payment-ui/ if no paymentHistoryQueryResponse exists', async () => {
-      const payload = {};
-
-      ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
-
-      const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
-
-      expect(result).to.be.undefined;
-      expect(res.redirect).to.have.been.calledWith('/payment-ui/');
-    });
+    expect(result).to.be.undefined;
+    expect(res.render).to.have.been.called;
   });
-});
+
+  it('should handle no paymentFilterValue and render all data', async () => {
+    const payload = {
+      paymentHistoryQueryResponse: {
+        statusCode: 200,
+        data: [
+          { benefitName: 'Jobseekers Allowance', amount: 100 },
+          { benefitName: 'ESA', amount: 200 },
+        ],
+      },
+    };
+
+    req.body.benefit = null;
+
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
+    showFilterData.returns([
+      { value: 'Jobseekers Allowance', checked: false },
+      { value: 'ESA', checked: false },
+    ]);
+
+    const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
+
+    expect(result).to.be.undefined;
+    expect(res.render).to.have.been.called;
+  });
+
+  it('should handle empty data in paymentHistoryQueryResponse', async () => {
+    const payload = {
+      paymentHistoryQueryResponse: {
+        statusCode: 200,
+        data: [],
+      },
+    };
+
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
+    showFilterData.returns([]);
+
+    const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
+
+    expect(result).to.be.undefined;
+    expect(res.render).to.have.been.called;
+  });
+
+  it('should redirect to /payment-ui/ when no data is available', async () => {
+    ServiceStackMock.redisCacheService.getPayload.resolves(null);
+
+    const result = await postFilterPaymentHistory(ServiceStackMock, loggerMock)(req, res, next);
+
+    expect(result).to.be.undefined;
+    expect(res.redirect).to.have.been.calledWith('/payment-ui/');
+  });
