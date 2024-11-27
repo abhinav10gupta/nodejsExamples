@@ -20,7 +20,7 @@ const totalDataValue = sinon.stub();
 const totalCountValue = sinon.stub();
 const totalPagesValue = sinon.stub();
 const fromPageNumber = sinon.stub();
-const toPageNumber = sinon.stub();
+toPageNumber = sinon.stub();
 
 describe('postFilterPaymentHistory', () => {
   let req, res, next;
@@ -78,6 +78,9 @@ describe('postFilterPaymentHistory', () => {
     // Assert
     expect(result).to.be.undefined;
     expect(res.render).to.have.been.calledWith('pages/payment-history.njk', sinon.match.object);
+    expect(req.casa.journeyContext.setDataForPage).to.have.been.calledWith('benefit-payment', { firstTimeVisit: false });
+    expect(JourneyContext.putContext).to.have.been.calledWith(req.session, req.casa.journeyContext);
+    expect(req.session.save).to.have.been.called;
   });
 
   it('should redirect to /payment-ui/ if paymentHistoryQueryResponse is not present', async () => {
@@ -127,6 +130,11 @@ describe('postFilterPaymentHistory', () => {
       { value: 'Jobseekers Allowance', checked: false },
       { value: 'Employment and Support Allowance', checked: false },
     ]);
+    totalDataValue.returns(payload.paymentHistoryQueryResponse.data);
+    totalCountValue.returns(2);
+    totalPagesValue.returns(1);
+    fromPageNumber.returns(1);
+    toPageNumber.returns(2);
 
     // Act
     const result = await postFilterPaymentHistory(ServiceStackMock, {})(req, res, next);
@@ -134,5 +142,36 @@ describe('postFilterPaymentHistory', () => {
     // Assert
     expect(result).to.be.undefined;
     expect(res.render).to.have.been.calledWith('pages/payment-history.njk', sinon.match.object);
+    expect(req.casa.journeyContext.setDataForPage).to.have.been.calledWith('benefit-payment', { firstTimeVisit: false });
+    expect(JourneyContext.putContext).to.have.been.calledWith(req.session, req.casa.journeyContext);
+    expect(req.session.save).to.have.been.called;
+  });
+
+  it('should render the payment history page with no paymentHistoryQueryResponse data and default pagination', async () => {
+    const payload = {
+      paymentHistoryQueryResponse: {
+        statusCode: 200,
+        data: [],
+      },
+    };
+
+    // Mock dependencies
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
+    showFilterData.returns([]);
+    totalDataValue.returns([]);
+    totalCountValue.returns(0);
+    totalPagesValue.returns(0);
+    fromPageNumber.returns(0);
+    toPageNumber.returns(0);
+
+    // Act
+    const result = await postFilterPaymentHistory(ServiceStackMock, {})(req, res, next);
+
+    // Assert
+    expect(result).to.be.undefined;
+    expect(res.render).to.have.been.calledWith('pages/payment-history.njk', sinon.match.object);
+    expect(req.casa.journeyContext.setDataForPage).to.have.been.calledWith('benefit-payment', { firstTimeVisit: false });
+    expect(JourneyContext.putContext).to.have.been.calledWith(req.session, req.casa.journeyContext);
+    expect(req.session.save).to.have.been.called;
   });
 });
