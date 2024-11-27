@@ -1,144 +1,138 @@
-const chai = require('chai');
-const sinon = require('sinon');
-const expect = chai.expect;
+import { postFilterPaymentHistory } from '../path/to/your/module';
+import sinon from 'sinon';
+import { expect } from 'chai';
 
-// Mock dependencies
-const ServiceStack = require('../services/ServiceStack'); // Path to your ServiceStack
-const Logger = require('@dwp/node-logger'); // Path to your Logger
-const verifyTokenMiddleware = require('../middleware/verifyTokenMiddleware'); // Path to your middleware
-const { Request, Response } = require('express');
+// Define the service stack mock for testing
+const ServiceStackMock = {
+  redisCacheService: {
+    getPayload: sinon.stub(),
+  },
+};
 
-// Mock services
-let serviceStackMock, loggerMock, req, res, next;
+// Define journey context
+const JourneyContext = {
+  putContext: sinon.stub(),
+};
 
-describe('verifyTokenMiddleware', () => {
-    beforeEach(() => {
-        // Create mocks and stubs
-        serviceStackMock = {
-            redisCacheService: {
-                getPayload: sinon.stub(),
-            },
-            jwtService: {
-                verifyToken: sinon.stub(),
-            },
-        };
+// Utility function mocks
+const showFilterData = sinon.stub();
+const totalDataValue = sinon.stub();
+const totalCountValue = sinon.stub();
+const totalPagesValue = sinon.stub();
+const fromPageNumber = sinon.stub();
+const toPageNumber = sinon.stub();
 
-        loggerMock = {
-            error: sinon.stub(),
-            info: sinon.stub(),
-        };
+describe('postFilterPaymentHistory', () => {
+  let req, res, next;
 
-        req = {
-            headers: {},
-            query: {},
-            session: {},
-        };
+  beforeEach(() => {
+    req = {
+      query: { requestid: '123' },
+      body: { benefit: ['Jobseekers Allowance'] },
+      params: { id: '1' },
+      session: { id: 'session123', save: sinon.stub(), context: {} },
+      casa: {
+        journeyContext: {
+          setDataForPage: sinon.stub(),
+          data: {
+            'payment-history': {},
+          },
+        },
+      },
+    };
 
-        res = {
-            locals: {},
-            status: sinon.stub().returnsThis(),
-            json: sinon.stub(),
-        };
+    res = {
+      render: sinon.stub(),
+      redirect: sinon.stub(),
+    };
 
-        next = sinon.stub();
-    });
+    next = sinon.stub();
+  });
 
-    afterEach(() => {
-        sinon.restore();
-    });
+  it('should render the payment history page when paymentHistoryQueryResponse is available', async () => {
+    const payload = {
+      paymentHistoryQueryResponse: {
+        statusCode: 200,
+        data: [
+          { benefitName: 'Jobseekers Allowance' },
+          { benefitName: 'Employment and Support Allowance' },
+        ],
+      },
+    };
 
-    it('should process a valid token and primed payload', async () => {
-        req.headers['x-access-token'] = 'valid-token';
-        req.query.sessionId = 'valid-session';
-        req.session.cacheId = 'valid-cache';
+    // Mock dependencies
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
+    showFilterData.returns([
+      { value: 'Jobseekers Allowance', checked: false },
+      { value: 'Employment and Support Allowance', checked: false },
+    ]);
+    totalDataValue.returns([{ benefitName: 'Jobseekers Allowance' }]);
+    totalCountValue.returns(1);
+    totalPagesValue.returns(1);
+    fromPageNumber.returns(1);
+    toPageNumber.returns(10);
 
-        serviceStackMock.jwtService.verifyToken.resolves({
-            isAgent: true,
-            jwtPayload: { guid: '12345' },
-        });
+    // Act
+    const result = await postFilterPaymentHistory(ServiceStackMock, {})(req, res, next);
 
-        serviceStackMock.redisCacheService.getPayload.resolves(
-            JSON.stringify({
-                renderAsFragment: true,
-                callbacks: { consumerCallbackComplete: 'callbackUrl' },
-                context: { dwpGUID: 'testGUID' },
-            })
-        );
+    // Assert
+    expect(result).to.be.undefined;
+    expect(res.render).to.have.been.calledWith('pages/payment-history.njk', sinon.match.object);
+  });
 
-        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+  it('should redirect to /payment-ui/ if paymentHistoryQueryResponse is not present', async () => {
+    const payload = {};
 
-        expect(serviceStackMock.jwtService.verifyToken.calledOnce).to.be.true;
-        expect(res.locals.isAgent).to.be.true;
-        expect(res.locals.renderAsFragment).to.be.true;
-        expect(next.calledOnce).to.be.true;
-    });
+    // Mock dependencies
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
 
-    it('should throw error when x-access-token header is missing', async () => {
-        req.headers = {}; // Missing x-access-token
+    // Act
+    const result = await postFilterPaymentHistory(ServiceStackMock, {})(req, res, next);
 
-        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+    // Assert
+    expect(result).to.be.undefined;
+    expect(res.redirect).to.have.been.calledWith('/payment-ui/');
+  });
 
-        expect(loggerMock.error.calledOnce).to.be.true;
-        expect(loggerMock.error.args[0][0]).to.include('Missing header key: x-access-token');
-        expect(res.status.calledWith(401)).to.be.true;
-        expect(next.called).to.be.false;
-    });
+  it('should handle error by calling next with error', async () => {
+    const error = new Error('Test Error');
 
-    it('should throw error when x-access-token header is empty', async () => {
-        req.headers['x-access-token'] = ''; // Empty x-access-token
+    // Mock dependencies
+    ServiceStackMock.redisCacheService.getPayload.rejects(error);
 
-        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+    // Act
+    const result = await postFilterPaymentHistory(ServiceStackMock, {})(req, res, next);
 
-        expect(loggerMock.error.calledOnce).to.be.true;
-        expect(loggerMock.error.args[0][0]).to.include('Empty value for key: x-access-token');
-        expect(res.status.calledWith(401)).to.be.true;
-        expect(next.called).to.be.false;
-    });
+    // Assert
+    expect(result).to.be.undefined;
+    expect(next).to.have.been.calledWith(error);
+  });
 
-    it('should handle invalid Redis cache ID', async () => {
-        req.headers['x-access-token'] = 'valid-token';
-        req.query.sessionId = 'invalid-session';
+  it('should render the page without filters when no benefits are selected', async () => {
+    req.body.benefit = null;
 
-        serviceStackMock.jwtService.verifyToken.resolves({
-            isAgent: false,
-        });
+    const payload = {
+      paymentHistoryQueryResponse: {
+        statusCode: 200,
+        data: [
+          { benefitName: 'Jobseekers Allowance' },
+          { benefitName: 'Employment and Support Allowance' },
+        ],
+      },
+    };
 
-        req.session.cacheId = undefined; // Simulating invalid cache
+    // Mock dependencies
+    ServiceStackMock.redisCacheService.getPayload.resolves(JSON.stringify(payload));
+    showFilterData.returns([
+      { value: 'Jobseekers Allowance', checked: false },
+      { value: 'Employment and Support Allowance', checked: false },
+    ]);
 
-        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
+    // Act
+    const result = await postFilterPaymentHistory(ServiceStackMock, {})(req, res, next);
 
-        expect(loggerMock.error.calledOnce).to.be.true;
-        expect(loggerMock.error.args[0][0]).to.include('Error extracting payload from cache');
-        expect(next.calledOnce).to.be.true; // Allow middleware to proceed
-    });
-
-    it('should log error and return 500 for unexpected errors', async () => {
-        req.headers['x-access-token'] = 'valid-token';
-
-        serviceStackMock.jwtService.verifyToken.throws(new Error('Unexpected error'));
-
-        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
-
-        expect(loggerMock.error.calledOnce).to.be.true;
-        expect(loggerMock.error.args[0][0]).to.include('Unexpected error');
-        expect(res.status.calledWith(500)).to.be.true;
-        expect(next.called).to.be.false;
-    });
-
-    it('should identify request as primed and valid', async () => {
-        req.headers['x-access-token'] = 'valid-token';
-        req.query.sessionId = 'valid-session';
-        req.session.cacheId = 'valid-cache';
-
-        serviceStackMock.jwtService.verifyToken.resolves({
-            isAgent: false,
-            jwtPayload: { guid: '12345' },
-        });
-
-        await verifyTokenMiddleware(serviceStackMock, loggerMock)(req, res, next);
-
-        expect(res.locals.isAgent).to.be.false;
-        expect(loggerMock.info.calledWithMatch(/primed and valid/)).to.be.true;
-        expect(next.calledOnce).to.be.true;
-    });
+    // Assert
+    expect(result).to.be.undefined;
+    expect(res.render).to.have.been.calledWith('pages/payment-history.njk', sinon.match.object);
+  });
 });
